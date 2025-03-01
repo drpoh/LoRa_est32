@@ -1,5 +1,5 @@
-// Приёмник (Receiver) - Версия v2.0b
-// Устройство для приёма состояния одного контакта через LoRa с режимом сна и звуковой индикацией
+// Приёмник (Receiver) - Версия v1.0
+// Устройство для приёма состояния контактов через LoRa с режимом сна и звуковой индикацией
 
 #include <SPI.h>
 #include <LoRa.h>
@@ -21,20 +21,20 @@
 #define OLED_SCL 15 
 #define OLED_RST 16
 #define LED_PIN 2
-#define PRG_PIN 0
-#define BUZZER_PIN 13
+#define PRG_PIN 0   // Кнопка PRG для отображения лога и пробуждения
+#define BUZZER_PIN 13 // Buzzer для звуковой индикации
 
 #define BAND 868E6
-#define PING_INTERVAL 2000  // Возвращаем 2000 мс для снижения нагрузки
-#define SIGNAL_TIMEOUT 5000
-#define DISPLAY_INTERVAL 10 // Ускоряем до 10 мс для мгновенной реакции
-#define LOG_SIZE 6
-#define SLEEP_TIMEOUT 1800000
-#define SLEEP_WARNING 10000
-#define LONG_PRESS_TIME 5000
-#define LOSS_TIMEOUT 10000
-#define EEPROM_SIZE (LOG_SIZE * (sizeof(unsigned long) + 8))
+#define PING_INTERVAL 2000  // Интервал отправки PING (мс)
+#define SIGNAL_TIMEOUT 5000 // Тайм-аут сигнала (мс)
+#define DISPLAY_INTERVAL 50 // Обновление дисплея (мс)
+#define LOG_SIZE 6  // Размер лога (записей)
+#define SLEEP_TIMEOUT 1800000 // Время до сна (мс, 30 минут)
+#define SLEEP_WARNING 10000   // Предупреждение до сна (мс, 10 с)
+#define LONG_PRESS_TIME 1000  // Время долгого нажатия PRG для сброса лога (мс)
+#define EEPROM_SIZE (LOG_SIZE * (sizeof(unsigned long) + 8)) // Размер EEPROM для лога
 
+// Константы строк
 #define STR_RECEIVER "Receiver"
 #define STR_CLOSED "CLOSED"
 #define STR_OPEN "OPEN"
@@ -42,11 +42,11 @@
 #define STR_UPTIME "Uptime: "
 #define STR_NO_SIGNAL "NO SIGNAL"
 #define STR_LOG "Log (last 6):"
-#define STR_CONTACT_CLOSED "CLOSED"
-#define STR_CONTACT_OPEN "OPEN"
+#define STR_CONTACTS_CLOSED "Contacts CLOSED"
+#define STR_CONTACTS_OPEN "Contacts OPEN"
 #define STR_TX "TX: "
 #define STR_RX "RX: "
-#define STR_VERSION "v2.0b"
+#define STR_VERSION "v1.0"
 #define STR_ERROR "ERROR"
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
@@ -69,17 +69,19 @@ unsigned long lastSignalTime = 0;
 unsigned long lastDisplayTime = 0;
 bool showLog = false;
 unsigned long lastButtonPress = 0;
-bool contactState = false;
 
 void displayUptime(unsigned long millis);
 void showStartupScreen();
+void checkHardware();
 void saveLogToEEPROM();
 void loadLogFromEEPROM();
 void resetLog();
-void displayTime(unsigned long millis);
-void initLoRa();
 
 void setup() {
+  Serial.begin(115200);
+  delay(100);
+
+  // Настройка пинов
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   pinMode(PRG_PIN, INPUT_PULLUP);
@@ -93,19 +95,33 @@ void setup() {
 
   Wire.begin(OLED_SDA, OLED_SCL);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
     while (1);
   }
-  delay(100); // Дополнительная задержка для стабилизации дисплея
-  display.clearDisplay();
-  display.display();
 
   showStartupScreen();
 
   SPI.begin(SCK, MISO, MOSI, SS);
-  initLoRa();
+  LoRa.setPins(SS, RST, DIO0);
+  if (!LoRa.begin(BAND)) {
+    Serial.println(F("LoRa init failed! Retrying..."));
+    delay(1000);
+    if (!LoRa.begin(BAND)) {
+      display.clearDisplay();
+      display.setCursor(0, 20);
+      display.println(STR_ERROR);
+      display.display();
+      while (1);
+    }
+  }
 
-  EEPROM.begin(EEPROM_SIZE);
-  loadLogFromEEPROM();
+  LoRa.setTxPower(20);
+  LoRa.setSpreadingFactor(12);
+
+  EEPROM.begin(EEPROM_SIZE); // Инициализация EEPROM
+  loadLogFromEEPROM();       // Загрузка лога из EEPROM
+
+  checkHardware(); // Самодиагностика
 
   display.clearDisplay();
   display.setTextColor(WHITE);
@@ -113,11 +129,13 @@ void setup() {
   display.setCursor(0, 0);
   display.println(STR_RECEIVER);
   display.display();
+  Serial.println("Receiver setup completed");
 
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
   lastSignalTime = millis();
 }
 
+// Основной цикл
 void loop() {
   unsigned long currentMillis = millis();
 
@@ -127,6 +145,7 @@ void loop() {
     LoRa.beginPacket();
     LoRa.print("PING");
     LoRa.endPacket();
+    Serial.println("[" + String(currentMillis) + "] Sent PING from receiver");
   }
 
   // Обработка кнопки PRG
@@ -134,9 +153,11 @@ void loop() {
     unsigned long pressStart = millis();
     while (!digitalRead(PRG_PIN) && (millis() - pressStart < LONG_PRESS_TIME));
     if (millis() - pressStart >= LONG_PRESS_TIME && (currentMillis - lastButtonPress > 200)) {
-      resetLog();
+      resetLog(); // Сброс лога при долгом нажатии
+      Serial.println("[" + String(currentMillis) + "] Log reset");
     } else if (currentMillis - lastButtonPress > 200) {
-      showLog = !showLog;
+      showLog = !showLog; // Переключение лога при коротком нажатии
+      Serial.println("[" + String(currentMillis) + "] PRG button pressed, showLog: " + String(showLog));
     }
     lastButtonPress = currentMillis;
   }
@@ -150,27 +171,35 @@ void loop() {
     }
 
     digitalWrite(LED_PIN, HIGH);
+    delay(10);
     digitalWrite(LED_PIN, LOW);
 
-    if (receivedMessage == "PONG") {
-      receiverRssi = LoRa.packetRssi();
-    } else {
-      senderRssi = LoRa.packetRssi();
-      contactState = (receivedMessage == STR_CONTACT_CLOSED);
+    Serial.println("[" + String(currentMillis) + "] Raw received: " + receivedMessage);
 
-      if (receivedMessage != lastReceivedState) {
-        stateLog[logIndex].state = receivedMessage;
+    if (receivedMessage.startsWith("PONG")) {
+      receiverRssi = receivedMessage.substring(5).toInt();
+      Serial.println("[" + String(currentMillis) + "] Received PONG with RSSI: " + String(receiverRssi));
+    } else if (receivedMessage.startsWith("Contacts")) {
+      senderRssi = LoRa.packetRssi();
+      Serial.println("[" + String(currentMillis) + "] Received: " + receivedMessage + " | Sender RSSI: " + String(senderRssi));
+
+      String newState = (receivedMessage == STR_CONTACTS_CLOSED) ? STR_CLOSED : STR_OPEN;
+      if (newState != lastReceivedState && receivedMessage.startsWith("Contacts")) {
+        stateLog[logIndex].state = newState;
         stateLog[logIndex].timestamp = currentMillis;
         logIndex = (logIndex + 1) % LOG_SIZE;
         if (logCount < LOG_SIZE) logCount++;
-        saveLogToEEPROM();
-        lastReceivedState = receivedMessage;
-        if (contactState) {
+        saveLogToEEPROM(); // Сохранение лога в EEPROM
+        lastReceivedState = newState;
+        Serial.println("[" + String(currentMillis) + "] StateLog updated: " + newState);
+        if (newState == STR_CLOSED) {
           digitalWrite(BUZZER_PIN, HIGH);
-          delay(10); // Уменьшаем задержку до 10 мс
+          delay(100);
           digitalWrite(BUZZER_PIN, LOW);
         }
       }
+    } else {
+      Serial.println("[" + String(currentMillis) + "] Unknown message: " + receivedMessage);
     }
 
     lastSignalTime = currentMillis;
@@ -189,13 +218,14 @@ void loop() {
     } else if (showLog) {
       displayLog(currentMillis);
     } else {
-      updateDisplay();
+      updateDisplay(receivedMessage);
     }
     lastDisplayTime = currentMillis;
   }
 
   // Переход в глубокий сон
   if (currentMillis - lastSignalTime >= SLEEP_TIMEOUT) {
+    Serial.println("[" + String(currentMillis) + "] Entering deep sleep...");
     display.clearDisplay();
     display.display();
     digitalWrite(LED_PIN, LOW);
@@ -204,14 +234,15 @@ void loop() {
   }
 }
 
-void updateDisplay() {
+// Обновление основного экрана
+void updateDisplay(String message) {
   display.clearDisplay();
   display.setTextColor(WHITE);
   display.setTextSize(1);
 
   display.setCursor(0, 0);
   display.println(STR_RECEIVER);
-  display.setCursor(90, 0); // Версия на (90, 0)
+  display.setCursor(100, 0);
   display.println(STR_VERSION);
 
   display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, WHITE);
@@ -229,25 +260,24 @@ void updateDisplay() {
   if (receiverPercent == -1) display.println("N/A");
   else display.println(String(receiverPercent) + "%");
 
-  display.setCursor(0, 20);
-  display.print("Contact: ");
-  if (contactState) {
-    display.println(STR_CLOSED);
-    display.setCursor(40, 30);
+  if (message == STR_CONTACTS_CLOSED) {
+    display.setCursor(40, 20);
     display.println("---------");
-    display.setCursor(56, 40);
+    display.setCursor(56, 30);
     display.println(STR_OK);
-  } else {
-    display.println(STR_OPEN);
-    display.setCursor(40, 30);
+    display.setCursor(0, 20);
+    display.println(STR_CLOSED);
+  } else if (message == STR_CONTACTS_OPEN) {
+    display.setCursor(40, 20);
     display.println("--- X ---");
+    display.setCursor(0, 20);
+    display.println(STR_OPEN);
   }
-
   displayUptime(millis());
 
   unsigned long timeToSleep = SLEEP_TIMEOUT - (millis() - lastSignalTime);
   if (timeToSleep <= SLEEP_WARNING) {
-    display.setCursor(0, 50);
+    display.setCursor(0, 40);
     display.print("Sleeping in ");
     display.print(timeToSleep / 1000);
     display.println("s");
@@ -256,6 +286,7 @@ void updateDisplay() {
   display.display();
 }
 
+// Отображение лога
 void displayLog(unsigned long currentMillis) {
   display.clearDisplay();
   display.setTextColor(WHITE);
@@ -266,16 +297,17 @@ void displayLog(unsigned long currentMillis) {
   int startIndex = (logCount < LOG_SIZE) ? 0 : logIndex;
   for (int i = 0; i < min(logCount, LOG_SIZE); i++) {
     int idx = (startIndex + i) % LOG_SIZE;
+    unsigned long timeElapsed = (currentMillis >= stateLog[idx].timestamp) ? (currentMillis - stateLog[idx].timestamp) / 1000 : 0;
     display.setCursor(0, 10 + i * 8);
-    display.print(i + 1); // Номер записи
-    display.print(": ");
-    display.print(stateLog[idx].state); // Без "Contact"
+    display.print(stateLog[idx].state);
     display.print(" ");
-    displayTime(stateLog[idx].timestamp);
+    display.print(timeElapsed);
+    display.println("s");
   }
   display.display();
 }
 
+// Отображение времени работы
 void displayUptime(unsigned long millis) {
   unsigned long seconds = millis / 1000;
   int hours = seconds / 3600;
@@ -293,6 +325,7 @@ void displayUptime(unsigned long millis) {
   display.print(secs);
 }
 
+// Показ стартового экрана
 void showStartupScreen() {
   display.clearDisplay();
   display.setTextColor(WHITE);
@@ -300,12 +333,30 @@ void showStartupScreen() {
   display.setCursor(10, 20);
   display.println("RS-Expert Oy");
   display.setTextSize(1);
-  display.setCursor(90, 40);
+  display.setCursor(100, 40);
   display.println(STR_VERSION);
   display.display();
-  delay(3000); // Удерживаем заставку 3 секунды
+  delay(2000);
 }
 
+// Самодиагностика оборудования
+void checkHardware() {
+  Serial.println("Hardware check:");
+  Serial.println("- OLED: OK");
+  Serial.print("- LoRa: ");
+  if (LoRa.begin(BAND)) {
+    Serial.println("OK");
+  } else {
+    Serial.println("FAIL");
+  }
+  Serial.print("- Buzzer: ");
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(100);
+  digitalWrite(BUZZER_PIN, LOW);
+  Serial.println("OK");
+}
+
+// Сохранение лога в EEPROM
 void saveLogToEEPROM() {
   int address = 0;
   for (int i = 0; i < LOG_SIZE; i++) {
@@ -321,6 +372,7 @@ void saveLogToEEPROM() {
   EEPROM.commit();
 }
 
+// Загрузка лога из EEPROM
 void loadLogFromEEPROM() {
   int address = 0;
   for (int i = 0; i < LOG_SIZE; i++) {
@@ -344,6 +396,7 @@ void loadLogFromEEPROM() {
   }
 }
 
+// Сброс лога
 void resetLog() {
   for (int i = 0; i < LOG_SIZE; i++) {
     stateLog[i].state = "N/A";
@@ -352,35 +405,4 @@ void resetLog() {
   logIndex = 0;
   logCount = 0;
   saveLogToEEPROM();
-}
-
-void displayTime(unsigned long millis) {
-  unsigned long seconds = millis / 1000;
-  int hours = seconds / 3600;
-  int minutes = (seconds % 3600) / 60;
-  int secs = seconds % 60;
-  if (hours < 10) display.print("0");
-  display.print(hours);
-  display.print(":");
-  if (minutes < 10) display.print("0");
-  display.print(minutes);
-  display.print(":");
-  if (secs < 10) display.print("0");
-  display.print(secs);
-}
-
-void initLoRa() {
-  LoRa.setPins(SS, RST, DIO0);
-  if (!LoRa.begin(BAND)) {
-    delay(1000);
-    if (!LoRa.begin(BAND)) {
-      display.clearDisplay();
-      display.setCursor(0, 20);
-      display.println(STR_ERROR);
-      display.display();
-      while (1);
-    }
-  }
-  LoRa.setTxPower(20);
-  LoRa.setSpreadingFactor(12);
 }
