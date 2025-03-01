@@ -1,17 +1,11 @@
 // Передатчик (Sender) - Версия v2.0b
-// Устройство для отправки состояния одного контакта через LoRa с режимом сна и OTA
+// Устройство для отправки состояния одного контакта через LoRa с режимом сна
 
 #include <SPI.h>
 #include <LoRa.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <WiFi.h>
-#include <ESPAsyncWebServer.h>
-#include <AsyncTCP.h>
-#include <ESPmDNS.h>
-#include <WiFiUdp.h>
-#include <ArduinoOTA.h>
 
 #define SCK     5
 #define MISO    19
@@ -39,16 +33,12 @@
 #define STR_OPEN "OPEN"
 #define STR_OK "OK"
 #define STR_UPTIME "Uptime: "
-#define STR_CONTACT_CLOSED "CLOSED" // Убираем "Contact" из сообщения
-#define STR_CONTACT_OPEN "OPEN"     // Убираем "Contact" из сообщения
+#define STR_CONTACT_CLOSED "CLOSED"
+#define STR_CONTACT_OPEN "OPEN"
 #define STR_VERSION "v2.0b"
 #define STR_ERROR "ERROR"
 
-const char* ssid = "RS-Expert-OTA";
-const char* password = "12345678";
-
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
-AsyncWebServer server(80);
 
 String lastState = "";
 unsigned long lastPingTime = 0;
@@ -83,12 +73,6 @@ void setup() {
   SPI.begin(SCK, MISO, MOSI, SS);
   initLoRa();
 
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(ssid, password);
-
-  ArduinoOTA.setHostname("RS-Expert-Sender");
-  ArduinoOTA.begin();
-
   display.clearDisplay();
   display.setTextColor(WHITE);
   display.setTextSize(1);
@@ -104,8 +88,6 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
 
-  ArduinoOTA.handle();
-
   if (currentMillis - lastPingTime >= SEND_INTERVAL) {
     lastPingTime = currentMillis;
 
@@ -114,7 +96,7 @@ void loop() {
 
     LoRa.beginPacket();
     LoRa.print(message);
-    LoRa.endPacket(); // Убираем delay(10)
+    LoRa.endPacket();
 
     digitalWrite(LED_PIN, HIGH);
     digitalWrite(LED_PIN, LOW);

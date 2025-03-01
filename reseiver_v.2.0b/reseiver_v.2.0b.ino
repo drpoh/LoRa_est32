@@ -1,5 +1,5 @@
 // Приёмник (Receiver) - Версия v2.0b
-// Устройство для приёма состояния одного контакта через LoRa с режимом сна, звуковой индикацией и OTA
+// Устройство для приёма состояния одного контакта через LoRa с режимом сна и звуковой индикацией
 
 #include <SPI.h>
 #include <LoRa.h>
@@ -7,12 +7,6 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <EEPROM.h>
-#include <WiFi.h>
-#include <ESPAsyncWebServer.h>
-#include <AsyncTCP.h>
-#include <ESPmDNS.h>
-#include <WiFiUdp.h>
-#include <ArduinoOTA.h>
 
 #define SCK     5
 #define MISO    19
@@ -48,18 +42,14 @@
 #define STR_UPTIME "Uptime: "
 #define STR_NO_SIGNAL "NO SIGNAL"
 #define STR_LOG "Log (last 6):"
-#define STR_CONTACT_CLOSED "CLOSED" // Убираем "Contact" из сообщения
-#define STR_CONTACT_OPEN "OPEN"     // Убираем "Contact" из сообщения
+#define STR_CONTACT_CLOSED "CLOSED"
+#define STR_CONTACT_OPEN "OPEN"
 #define STR_TX "TX: "
 #define STR_RX "RX: "
 #define STR_VERSION "v2.0b"
 #define STR_ERROR "ERROR"
 
-const char* ssid = "RS-Expert-OTA";
-const char* password = "12345678";
-
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
-AsyncWebServer server(80);
 
 struct LogEntry {
   String state;
@@ -117,12 +107,6 @@ void setup() {
   EEPROM.begin(EEPROM_SIZE);
   loadLogFromEEPROM();
 
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(ssid, password);
-
-  ArduinoOTA.setHostname("RS-Expert-Receiver");
-  ArduinoOTA.begin();
-
   display.clearDisplay();
   display.setTextColor(WHITE);
   display.setTextSize(1);
@@ -137,13 +121,11 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
 
-  ArduinoOTA.handle();
-
   if (currentMillis - lastPingTime >= PING_INTERVAL) {
     lastPingTime = currentMillis;
     LoRa.beginPacket();
     LoRa.print("PING");
-    LoRa.endPacket(); // Убираем delay(10)
+    LoRa.endPacket();
   }
 
   if (!digitalRead(PRG_PIN)) {
