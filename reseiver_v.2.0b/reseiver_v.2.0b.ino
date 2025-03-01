@@ -1,5 +1,5 @@
 // Приёмник (Receiver) - Версия v2.0b
-// Устройство для приёма состояния одного контакта через LoRa с режимом сна, звуковой индикацией и OTA
+// Устройство для приёма состояния одного контакта через LoRa с режимом сна и звуковой индикацией
 
 #include <SPI.h>
 #include <LoRa.h>
@@ -7,12 +7,6 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <EEPROM.h>
-#include <WiFi.h>
-#include <ESPAsyncWebServer.h>
-#include <AsyncTCP.h>
-#include <ESPmDNS.h>
-#include <WiFiUdp.h>
-#include <ArduinoOTA.h>
 
 #define SCK     5
 #define MISO    19
@@ -31,9 +25,9 @@
 #define BUZZER_PIN 13
 
 #define BAND 868E6
-#define PING_INTERVAL 500   // Ускоряем пинг до 500 мс
+#define PING_INTERVAL 2000  // Возвращаем 2000 мс для снижения нагрузки
 #define SIGNAL_TIMEOUT 5000
-#define DISPLAY_INTERVAL 20 // Обновление дисплея каждые 20 мс
+#define DISPLAY_INTERVAL 10 // Ускоряем до 10 мс для мгновенной реакции
 #define LOG_SIZE 6
 #define SLEEP_TIMEOUT 1800000
 #define SLEEP_WARNING 10000
@@ -48,18 +42,14 @@
 #define STR_UPTIME "Uptime: "
 #define STR_NO_SIGNAL "NO SIGNAL"
 #define STR_LOG "Log (last 6):"
-#define STR_CONTACT_CLOSED "CLOSED" // Убираем "Contact" из сообщения
-#define STR_CONTACT_OPEN "OPEN"     // Убираем "Contact" из сообщения
+#define STR_CONTACT_CLOSED "CLOSED"
+#define STR_CONTACT_OPEN "OPEN"
 #define STR_TX "TX: "
 #define STR_RX "RX: "
 #define STR_VERSION "v2.0b"
 #define STR_ERROR "ERROR"
 
-const char* ssid = "RS-Expert-OTA";
-const char* password = "12345678";
-
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
-AsyncWebServer server(80);
 
 struct LogEntry {
   String state;
@@ -117,12 +107,6 @@ void setup() {
   EEPROM.begin(EEPROM_SIZE);
   loadLogFromEEPROM();
 
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(ssid, password);
-
-  ArduinoOTA.setHostname("RS-Expert-Receiver");
-  ArduinoOTA.begin();
-
   display.clearDisplay();
   display.setTextColor(WHITE);
   display.setTextSize(1);
@@ -137,15 +121,15 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
 
-  ArduinoOTA.handle();
-
+  // Отправка PING каждые 2 секунды
   if (currentMillis - lastPingTime >= PING_INTERVAL) {
     lastPingTime = currentMillis;
     LoRa.beginPacket();
     LoRa.print("PING");
-    LoRa.endPacket(); // Убираем delay(10)
+    LoRa.endPacket();
   }
 
+  // Обработка кнопки PRG
   if (!digitalRead(PRG_PIN)) {
     unsigned long pressStart = millis();
     while (!digitalRead(PRG_PIN) && (millis() - pressStart < LONG_PRESS_TIME));
@@ -157,6 +141,7 @@ void loop() {
     lastButtonPress = currentMillis;
   }
 
+  // Обработка входящих пакетов
   int packetSize = LoRa.parsePacket();
   if (packetSize) {
     receivedMessage = "";
@@ -169,7 +154,7 @@ void loop() {
 
     if (receivedMessage == "PONG") {
       receiverRssi = LoRa.packetRssi();
-    } else if (receivedMessage == STR_CONTACT_CLOSED || receivedMessage == STR_CONTACT_OPEN) {
+    } else {
       senderRssi = LoRa.packetRssi();
       contactState = (receivedMessage == STR_CONTACT_CLOSED);
 
@@ -182,7 +167,7 @@ void loop() {
         lastReceivedState = receivedMessage;
         if (contactState) {
           digitalWrite(BUZZER_PIN, HIGH);
-          delay(50);
+          delay(10); // Уменьшаем задержку до 10 мс
           digitalWrite(BUZZER_PIN, LOW);
         }
       }
@@ -191,6 +176,7 @@ void loop() {
     lastSignalTime = currentMillis;
   }
 
+  // Обновление дисплея
   if (currentMillis - lastDisplayTime >= DISPLAY_INTERVAL) {
     if (currentMillis - lastSignalTime > SIGNAL_TIMEOUT && !showLog) {
       display.clearDisplay();
@@ -208,11 +194,7 @@ void loop() {
     lastDisplayTime = currentMillis;
   }
 
-  if (currentMillis - lastSignalTime >= LOSS_TIMEOUT) {
-    initLoRa();
-    lastSignalTime = currentMillis;
-  }
-
+  // Переход в глубокий сон
   if (currentMillis - lastSignalTime >= SLEEP_TIMEOUT) {
     display.clearDisplay();
     display.display();

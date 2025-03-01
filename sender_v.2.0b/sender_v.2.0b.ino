@@ -21,7 +21,7 @@
 
 #define BAND 868E6
 #define SEND_INTERVAL 10    // Проверка контакта каждые 10 мс
-#define DISPLAY_INTERVAL 20 // Обновление дисплея каждые 20 мс
+#define DISPLAY_INTERVAL 10 // Обновление дисплея каждые 10 мс
 #define SLEEP_TIMEOUT 1800000
 #define SLEEP_WARNING 10000
 #define PONG_TIMEOUT 10000
@@ -88,6 +88,7 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
 
+  // Проверка и отправка состояния контакта
   if (currentMillis - lastPingTime >= SEND_INTERVAL) {
     lastPingTime = currentMillis;
 
@@ -111,29 +112,14 @@ void loop() {
     }
   }
 
-  checkResponse();
-
-  if (currentMillis - lastPongTime >= PONG_TIMEOUT) {
-    initLoRa();
-    lastPongTime = currentMillis;
-  }
-
-  if (currentMillis - lastStateChangeTime >= SLEEP_TIMEOUT) {
-    display.clearDisplay();
-    display.display();
-    digitalWrite(LED_PIN, LOW);
-    esp_deep_sleep_start();
-  }
-}
-
-void checkResponse() {
+  // Обработка ответа от Receiver
   int packetSize = LoRa.parsePacket();
   if (packetSize) {
     String response = "";
     while (LoRa.available()) {
       response += (char)LoRa.read();
     }
-    if (response.startsWith("PING")) {
+    if (response == "PING") {
       int rssi = LoRa.packetRssi();
       String pongPacket = "PONG " + String(rssi);
       LoRa.beginPacket();
@@ -141,6 +127,20 @@ void checkResponse() {
       LoRa.endPacket();
       lastPongTime = millis();
     }
+  }
+
+  // Перезапуск LoRa при потере связи
+  if (currentMillis - lastPongTime >= PONG_TIMEOUT) {
+    initLoRa();
+    lastPongTime = currentMillis;
+  }
+
+  // Переход в глубокий сон
+  if (currentMillis - lastStateChangeTime >= SLEEP_TIMEOUT) {
+    display.clearDisplay();
+    display.display();
+    digitalWrite(LED_PIN, LOW);
+    esp_deep_sleep_start();
   }
 }
 
