@@ -1,13 +1,21 @@
 // Приёмник (Receiver) - Версия v2.0
 // Устройство для приёма состояния контактов через LoRa с режимом сна
 // Изменение #1: 2025-03-06 10:00 - STATE_PIN 32 для состояния, CONTACT_PIN 0 для сна, инвертирована логика OPEN/CLOSE
+// Изменение #2: 2025-03-06 16:00 - Добавлен трёхтональный сигнал зуммера при состоянии CLOSED
+// Изменение #3: 2025-03-06 18:00 - Исправлена опечатка STR_CONTACTS_OPEN на STR_CONTACT_OPEN
+// Изменение #4: 2025-03-06 20:00 - Зуммер пищит непрерывно при CLOSED с более быстрым и громким сигналом
+// Изменение #5: 2025-03-06 22:00 - Частоты зуммера изменены на 1400 Гц, 1700 Гц, 2000 Гц
+// Изменение #6: 2025-03-07 12:00 - Трёхтональные сигналы включения/выключения, обработка SHUTDOWN от Sender
+// Изменение #7: 2025-03-07 20:00 - Звуки вкл/выкл обновлены (100 мс)
+// Изменение #8: 2025-03-08 10:00 - Добавлено "Sender off" под "NO SIGNAL" при получении SHUTDOWN
+// Изменение #9: 2025-03-08 14:00 - Добавлены: время последнего сигнала, RSSI в процентах, анимация активности, разные тона
+// Изменение #10: 2025-03-09 12:00 - Убраны events и всё связанное
 
 #include <SPI.h>
 #include <LoRa.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <EEPROM.h>
 
 // Пины для LoRa и OLED
 #define SCK     5    // SPI SCK
@@ -19,7 +27,7 @@
 #define OLED_SDA 4   // I2C SDA
 #define OLED_SCL 15  // I2C SCL
 #define OLED_RST 16  // OLED Reset
-#define CONTACT_PIN 0   // Изменение #1: Для глубокого сна
+#define CONTACT_PIN 0   // Для глубокого сна
 #define BUZZER_PIN 13   // Пин для зуммера
 #define LED_PIN 2       // LED для индикации активности
 
@@ -30,37 +38,27 @@
 #define DISPLAY_INTERVAL 100 // Интервал обновления дисплея (мс)
 #define SLEEP_TIMEOUT 3600000 // Время до перехода в сон (мс, 60 минут)
 #define SLEEP_WARNING 10000   // Время до сна для предупреждения (мс, 10 с)
-#define LONG_PRESS_TIME 3000  // 3 секунды для выключения
+#define LONG_PRESS_TIME 1000  // 1 секунда для выключения
 #define SCREEN_WIDTH 128      // Ширина дисплея
 #define SCREEN_HEIGHT 64      // Высота дисплея
-#define LOG_SIZE 6            // Размер лога
-#define EEPROM_SIZE (LOG_SIZE * (sizeof(unsigned long) + 8)) // Размер EEPROM
 
-// Константы строк
 #define STR_RECEIVER "Receiver"
 #define STR_CLOSED "CLOSED"
 #define STR_OPEN "OPEN"
 #define STR_OK "OK"
 #define STR_UPTIME "Uptime: "
 #define STR_NO_SIGNAL "NO SIGNAL"
-#define STR_LOG "Log (last 6):"
-#define STR_CONTACTS_CLOSED "Contacts CLOSED"
-#define STR_CONTACTS_OPEN "Contacts OPEN"
+#define STR_SENDER_OFF "Sender off"
+#define STR_CONTACT_CLOSED "Contacts CLOSED"
+#define STR_CONTACT_OPEN "Contacts OPEN"
 #define STR_TX "TX: "
 #define STR_RX "RX: "
+#define STR_LAST_SIGNAL "Last signal: "
 #define STR_VERSION "v2.0"
 #define STR_ERROR "ERROR"
+#define STR_SHUTDOWN "SHUTDOWN"
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
-
-struct LogEntry {
-  String state;
-  unsigned long timestamp;
-};
-
-LogEntry stateLog[LOG_SIZE];
-int logIndex = 0;
-int logCount = 0;
 
 String receivedMessage = "";
 String lastReceivedState = "";
@@ -69,23 +67,24 @@ int receiverRssi = -1;
 unsigned long lastPingTime = 0;
 unsigned long lastSignalTime = 0;
 unsigned long lastDisplayTime = 0;
-bool showLog = false;
 unsigned long lastButtonPress = 0;
+bool buzzerActive = false;
+unsigned long lastBuzzerTime = 0;
+int buzzerToneIndex = 0;
+bool senderOff = false;
 
 void displayUptime(unsigned long millis);
 void showStartupScreen();
 void checkHardware();
-void saveLogToEEPROM();
-void loadLogFromEEPROM();
-void resetLog();
+void playContinuousThreeToneBuzzer();
+void playStartupSound();
+void playClosedSound();
+void playShutdownSound();
 
 void setup() {
-  Serial.begin(115200);
-  delay(100);
-
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
-  pinMode(CONTACT_PIN, INPUT_PULLUP); // Изменение #1: Вход для сна
+  pinMode(CONTACT_PIN, INPUT_PULLUP);
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
 
@@ -96,16 +95,15 @@ void setup() {
 
   Wire.begin(OLED_SDA, OLED_SCL);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("SSD1306 allocation failed"));
     while (1);
   }
 
   showStartupScreen();
+  playStartupSound();
 
   SPI.begin(SCK, MISO, MOSI, SS);
   LoRa.setPins(SS, RST, DIO0);
   if (!LoRa.begin(BAND)) {
-    Serial.println(F("LoRa init failed! Retrying..."));
     delay(1000);
     if (!LoRa.begin(BAND)) {
       display.clearDisplay();
@@ -119,9 +117,6 @@ void setup() {
   LoRa.setTxPower(20);
   LoRa.setSpreadingFactor(12);
 
-  EEPROM.begin(EEPROM_SIZE);
-  loadLogFromEEPROM();
-
   checkHardware();
 
   display.clearDisplay();
@@ -130,42 +125,37 @@ void setup() {
   display.setCursor(0, 0);
   display.println(STR_RECEIVER);
   display.display();
-  Serial.println("Receiver setup completed");
 
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0); // Изменение #1: Пробуждение по GPIO 0
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
   lastSignalTime = millis();
 }
 
 void loop() {
   unsigned long currentMillis = millis();
 
-  // Отправка PING каждые 2 секунды
   if (currentMillis - lastPingTime >= PING_INTERVAL) {
     lastPingTime = currentMillis;
     LoRa.beginPacket();
     LoRa.print("PING");
     LoRa.endPacket();
-    Serial.println("[" + String(currentMillis) + "] Sent PING from receiver");
   }
 
-  // Обработка CONTACT_PIN для глубокого сна
-  if (!digitalRead(CONTACT_PIN)) { // Изменение #1: Проверка нажатия на GPIO 0
+  if (!digitalRead(CONTACT_PIN)) {
     unsigned long pressStart = millis();
     while (!digitalRead(CONTACT_PIN) && (millis() - pressStart < LONG_PRESS_TIME));
     if (millis() - pressStart >= LONG_PRESS_TIME) {
-      Serial.println("[" + String(currentMillis) + "] Shutting down...");
+      digitalWrite(BUZZER_PIN, LOW);
       display.clearDisplay();
       display.setCursor(0, 20);
       display.println("Shutting down...");
       display.display();
+      playShutdownSound();
       delay(1000);
       digitalWrite(LED_PIN, LOW);
-      digitalWrite(BUZZER_PIN, LOW);
       esp_deep_sleep_start();
     }
   }
 
-  // Обработка входящих пакетов
   int packetSize = LoRa.parsePacket();
   if (packetSize) {
     receivedMessage = "";
@@ -174,65 +164,76 @@ void loop() {
     }
 
     digitalWrite(LED_PIN, HIGH);
-    delay(10);
+    delay(5);
     digitalWrite(LED_PIN, LOW);
 
-    Serial.println("[" + String(currentMillis) + "] Raw received: " + receivedMessage);
+    receiverRssi = LoRa.packetRssi();
 
     if (receivedMessage.startsWith("PONG")) {
-      receiverRssi = receivedMessage.substring(5).toInt();
-      Serial.println("[" + String(currentMillis) + "] Received PONG with RSSI: " + String(receiverRssi));
+      senderRssi = receivedMessage.substring(5).toInt();
     } else if (receivedMessage.startsWith("Contacts")) {
-      senderRssi = LoRa.packetRssi();
-      Serial.println("[" + String(currentMillis) + "] Received: " + receivedMessage + " | Sender RSSI: " + String(senderRssi));
-
-      String newState = (receivedMessage == STR_CONTACTS_CLOSED) ? STR_CLOSED : STR_OPEN;
+      String newState = (receivedMessage == STR_CONTACT_CLOSED) ? STR_CLOSED : STR_OPEN;
       if (newState != lastReceivedState && receivedMessage.startsWith("Contacts")) {
-        stateLog[logIndex].state = newState;
-        stateLog[logIndex].timestamp = currentMillis;
-        logIndex = (logIndex + 1) % LOG_SIZE;
-        if (logCount < LOG_SIZE) logCount++;
-        saveLogToEEPROM();
         lastReceivedState = newState;
-        Serial.println("[" + String(currentMillis) + "] StateLog updated: " + newState);
+
         if (newState == STR_CLOSED) {
-          digitalWrite(BUZZER_PIN, HIGH);
-          delay(100);
+          buzzerActive = true;
+          playClosedSound();
+          senderOff = false;
+        } else if (newState == STR_OPEN) {
           digitalWrite(BUZZER_PIN, LOW);
+          buzzerActive = false;
+          buzzerToneIndex = 0;
+          senderOff = false;
         }
       }
-    } else {
-      Serial.println("[" + String(currentMillis) + "] Unknown message: " + receivedMessage);
+    } else if (receivedMessage == STR_SHUTDOWN) {
+      digitalWrite(BUZZER_PIN, LOW);
+      senderOff = true;
+      lastSignalTime = currentMillis;
     }
 
     lastSignalTime = currentMillis;
   }
 
-  // Обновление дисплея
+  if (buzzerActive) {
+    playContinuousThreeToneBuzzer();
+  }
+
   if (currentMillis - lastDisplayTime >= DISPLAY_INTERVAL) {
-    if (currentMillis - lastSignalTime > SIGNAL_TIMEOUT && !showLog) {
+    if (currentMillis - lastSignalTime > SIGNAL_TIMEOUT) {
       display.clearDisplay();
+      display.setTextColor(WHITE);
+      display.setTextSize(1);
       display.setCursor(0, 0);
       display.println(STR_RECEIVER);
-      display.setCursor(0, 20);
+      display.setCursor(0, 10);
       display.println(STR_NO_SIGNAL);
+      if (senderOff) {
+        display.setCursor(0, 20);
+        display.println(STR_SENDER_OFF);
+      }
+      display.setCursor(0, 30);
+      display.print(STR_LAST_SIGNAL);
+      unsigned long timeElapsed = (currentMillis - lastSignalTime) / 1000;
+      display.print(timeElapsed);
+      display.println("s ago");
+      display.setCursor(120, 0);
+      display.println((currentMillis % 1000 < 500) ? "." : " ");
       displayUptime(currentMillis);
       display.display();
-    } else if (showLog) {
-      displayLog(currentMillis);
     } else {
       updateDisplay(receivedMessage);
     }
     lastDisplayTime = currentMillis;
   }
 
-  // Переход в глубокий сон при отсутствии активности
-  if (currentMillis - lastSignalTime >= SLEEP_TIMEOUT) { // Изменение #1: Сон через 60 минут
-    Serial.println("[" + String(currentMillis) + "] Entering deep sleep...");
+  if (currentMillis - lastSignalTime >= SLEEP_TIMEOUT) {
+    digitalWrite(BUZZER_PIN, LOW);
     display.clearDisplay();
     display.display();
+    playShutdownSound();
     digitalWrite(LED_PIN, LOW);
-    digitalWrite(BUZZER_PIN, LOW);
     esp_deep_sleep_start();
   }
 }
@@ -262,14 +263,14 @@ void updateDisplay(String message) {
   if (receiverPercent == -1) display.println("N/A");
   else display.println(String(receiverPercent) + "%");
 
-  if (message == STR_CONTACTS_CLOSED) {
+  if (message == STR_CONTACT_CLOSED) {
     display.setCursor(40, 20);
     display.println("---------");
     display.setCursor(56, 30);
     display.println(STR_OK);
     display.setCursor(0, 20);
     display.println(STR_CLOSED);
-  } else if (message == STR_CONTACTS_OPEN) {
+  } else if (message == STR_CONTACT_OPEN) {
     display.setCursor(40, 20);
     display.println("--- X ---");
     display.setCursor(0, 20);
@@ -285,26 +286,6 @@ void updateDisplay(String message) {
     display.println("s");
   }
 
-  display.display();
-}
-
-void displayLog(unsigned long currentMillis) {
-  display.clearDisplay();
-  display.setTextColor(WHITE);
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.println(STR_LOG);
-
-  int startIndex = (logCount < LOG_SIZE) ? 0 : logIndex;
-  for (int i = 0; i < min(logCount, LOG_SIZE); i++) {
-    int idx = (startIndex + i) % LOG_SIZE;
-    unsigned long timeElapsed = (currentMillis >= stateLog[idx].timestamp) ? (currentMillis - stateLog[idx].timestamp) / 1000 : 0;
-    display.setCursor(0, 10 + i * 8);
-    display.print(stateLog[idx].state);
-    display.print(" ");
-    display.print(timeElapsed);
-    display.println("s");
-  }
   display.display();
 }
 
@@ -339,65 +320,57 @@ void showStartupScreen() {
 }
 
 void checkHardware() {
-  Serial.println("Hardware check:");
-  Serial.println("- OLED: OK");
-  Serial.print("- LoRa: ");
-  if (LoRa.begin(BAND)) {
-    Serial.println("OK");
-  } else {
-    Serial.println("FAIL");
+  if (!LoRa.begin(BAND)) {
+    delay(1000);
+    if (!LoRa.begin(BAND)) {
+      display.clearDisplay();
+      display.setCursor(0, 20);
+      display.println(STR_ERROR);
+      display.display();
+      while (1);
+    }
   }
-  Serial.print("- Buzzer: ");
-  digitalWrite(BUZZER_PIN, HIGH);
+}
+
+void playContinuousThreeToneBuzzer() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastBuzzerTime >= 80) {
+    noTone(BUZZER_PIN);
+    switch (buzzerToneIndex) {
+      case 0:
+        tone(BUZZER_PIN, 1400, 80);
+        break;
+      case 1:
+        tone(BUZZER_PIN, 1700, 80);
+        break;
+      case 2:
+        tone(BUZZER_PIN, 2000, 80);
+        break;
+    }
+    lastBuzzerTime = currentMillis;
+    buzzerToneIndex = (buzzerToneIndex + 1) % 3;
+  }
+}
+
+void playStartupSound() {
+  tone(BUZZER_PIN, 800, 100);
   delay(100);
-  digitalWrite(BUZZER_PIN, LOW);
-  Serial.println("OK");
+  tone(BUZZER_PIN, 1000, 100);
+  delay(100);
+  tone(BUZZER_PIN, 1200, 100);
+  delay(100);
 }
 
-void saveLogToEEPROM() {
-  int address = 0;
-  for (int i = 0; i < LOG_SIZE; i++) {
-    EEPROM.put(address, stateLog[i].timestamp);
-    address += sizeof(unsigned long);
-    String state = stateLog[i].state;
-    for (int j = 0; j < 8; j++) {
-      char c = (j < state.length()) ? state[j] : '\0';
-      EEPROM.write(address + j, c);
-    }
-    address += 8;
-  }
-  EEPROM.commit();
+void playClosedSound() {
+  tone(BUZZER_PIN, 1500, 100);
+  delay(100);
 }
 
-void loadLogFromEEPROM() {
-  int address = 0;
-  for (int i = 0; i < LOG_SIZE; i++) {
-    EEPROM.get(address, stateLog[i].timestamp);
-    address += sizeof(unsigned long);
-    char state[9];
-    for (int j = 0; j < 8; j++) {
-      state[j] = EEPROM.read(address + j);
-    }
-    state[8] = '\0';
-    stateLog[i].state = String(state);
-    address += 8;
-    if (stateLog[i].timestamp > 0 && stateLog[i].state != "N/A") {
-      logCount++;
-      logIndex = (logIndex + 1) % LOG_SIZE;
-    }
-  }
-  if (logCount > 0) {
-    logIndex = logCount % LOG_SIZE;
-    lastReceivedState = stateLog[(logIndex - 1 + LOG_SIZE) % LOG_SIZE].state;
-  }
-}
-
-void resetLog() {
-  for (int i = 0; i < LOG_SIZE; i++) {
-    stateLog[i].state = "N/A";
-    stateLog[i].timestamp = 0;
-  }
-  logIndex = 0;
-  logCount = 0;
-  saveLogToEEPROM();
+void playShutdownSound() {
+  tone(BUZZER_PIN, 1200, 100);
+  delay(100);
+  tone(BUZZER_PIN, 1000, 100);
+  delay(100);
+  tone(BUZZER_PIN, 800, 100);
+  delay(100);
 }
