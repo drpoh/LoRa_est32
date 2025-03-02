@@ -1,4 +1,4 @@
-// Приёмник (Receiver) - Версия v2.0
+// Приёмник (Receiver) - v2.0
 // Устройство для приёма состояния контактов через LoRa с режимом сна
 // Изменение #1: 2025-03-06 10:00 - STATE_PIN 32 для состояния, CONTACT_PIN 0 для сна, инвертирована логика OPEN/CLOSE
 // Изменение #2: 2025-03-06 16:00 - Добавлен трёхтональный сигнал зуммера при состоянии CLOSED
@@ -9,7 +9,7 @@
 // Изменение #7: 2025-03-07 20:00 - Звуки вкл/выкл обновлены (100 мс)
 // Изменение #8: 2025-03-08 10:00 - Добавлено "Sender off" под "NO SIGNAL" при получении SHUTDOWN
 // Изменение #9: 2025-03-08 14:00 - Добавлены: время последнего сигнала, RSSI в процентах, анимация активности, разные тона
-// Изменение #10: 2025-03-09 12:00 - Убраны events и всё связанное
+// Изменение #10: 2025-03-09 22:00 - STR_RECEIVER возвращено к "Receiver"
 
 #include <SPI.h>
 #include <LoRa.h>
@@ -42,7 +42,7 @@
 #define SCREEN_WIDTH 128      // Ширина дисплея
 #define SCREEN_HEIGHT 64      // Высота дисплея
 
-#define STR_RECEIVER "Receiver"
+#define STR_RECEIVER "Receiver" // Изменение #10
 #define STR_CLOSED "CLOSED"
 #define STR_OPEN "OPEN"
 #define STR_OK "OK"
@@ -311,12 +311,12 @@ void showStartupScreen() {
   display.setTextColor(WHITE);
   display.setTextSize(2);
   display.setCursor(10, 20);
-  display.println("RS-Expert Oy");
+  display.println("RS-Expert");
   display.setTextSize(1);
   display.setCursor(100, 40);
   display.println(STR_VERSION);
   display.display();
-  delay(2000);
+  delay(1000);
 }
 
 void checkHardware() {

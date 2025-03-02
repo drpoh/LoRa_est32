@@ -1,4 +1,4 @@
-// Передатчик (Sender) - Версия v2.0 (обновлённая)
+// Передатчик (Sender) - v2.0
 // Устройство для отправки состояния контактов через LoRa с режимом сна
 // Изменение #1: 2025-03-05 23:00 - Инвертирована логика OPEN/CLOSE, добавлен глубокий сон через GPIO 0 (60 минут или 3 секунды нажатия)
 // Изменение #2: 2025-03-06 10:00 - STATE_PIN 32 для состояния, CONTACT_PIN 0 для сна
@@ -7,7 +7,8 @@
 // Изменение #5: 2025-03-06 22:00 - Убрана мигающая звёздочка в updateDisplay
 // Изменение #6: 2025-03-07 12:00 - Добавлено сообщение SHUTDOWN перед глубоким сном
 // Изменение #7: 2025-03-08 18:00 - SEND_INTERVAL и DISPLAY_INTERVAL изменены на 300 мс
-// Изменение #8: 2025-03-08 22:00 - Добавлены TX и мигающая точка
+// Изменение #8: 2025-03-09 20:00 - Заставка "RS-Expert" вместо "RS-Expert Oy", длительность 1 с
+// Изменение #9: 2025-03-09 22:00 - STR_SENDER возвращено к "Sender"
 
 #include <SPI.h>
 #include <LoRa.h>
@@ -39,14 +40,14 @@
 #define SCREEN_WIDTH 128      // Ширина дисплея
 #define SCREEN_HEIGHT 64      // Высота дисплея
 
-#define STR_SENDER "Sender"
+#define STR_SENDER "Sender"   // Изменение #9
 #define STR_CLOSED "CLOSED"
 #define STR_OPEN "OPEN"
 #define STR_OK "OK"
 #define STR_UPTIME "Uptime: "
 #define STR_CONTACT_CLOSED "Contacts CLOSED"
 #define STR_CONTACT_OPEN "Contacts OPEN"
-#define STR_TX "TX: "         // Изменение #8
+#define STR_TX "TX: "
 #define STR_VERSION "v2.0"
 #define STR_ERROR "ERROR"
 #define STR_SHUTDOWN "SHUTDOWN"
@@ -57,7 +58,7 @@ String lastState = "";
 unsigned long lastPingTime = 0;
 unsigned long lastDisplayTime = 0;
 unsigned long lastStateChangeTime = 0;
-int senderRssi = -1; // Изменение #8: RSSI передатчика
+int senderRssi = -1;
 
 void displayUptime(unsigned long millis);
 void showStartupScreen();
@@ -180,7 +181,7 @@ void checkResponse() {
     }
     if (response.startsWith("PING")) {
       int rssi = LoRa.packetRssi();
-      senderRssi = rssi; // Изменение #8: RSSI передатчика
+      senderRssi = rssi;
       LoRa.beginPacket();
       LoRa.print("PONG " + String(rssi));
       LoRa.endPacket();
@@ -200,7 +201,7 @@ void updateDisplay(bool contactsClosed) {
 
   display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, WHITE);
 
-  int senderPercent = (senderRssi == -1) ? -1 : constrain(((senderRssi + 120) * 100) / 90, 0, 100); // Изменение #8
+  int senderPercent = (senderRssi == -1) ? -1 : constrain(((senderRssi + 120) * 100) / 90, 0, 100);
   display.setCursor(0, 10);
   display.print(STR_TX);
   if (senderPercent == -1) display.println("N/A");
@@ -230,7 +231,7 @@ void updateDisplay(bool contactsClosed) {
     display.println("s");
   }
 
-  display.setCursor(120, 10); // Изменение #8: Мигающая точка
+  display.setCursor(120, 10);
   display.println((millis() % 1000 < 500) ? "." : " ");
   display.display();
 }
@@ -257,12 +258,12 @@ void showStartupScreen() {
   display.setTextColor(WHITE);
   display.setTextSize(2);
   display.setCursor(10, 20);
-  display.println("RS-Expert Oy");
+  display.println("RS-Expert");
   display.setTextSize(1);
   display.setCursor(100, 40);
   display.println(STR_VERSION);
   display.display();
-  delay(2000);
+  delay(1000);
 }
 
 void checkHardware() {
