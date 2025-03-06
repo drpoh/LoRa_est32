@@ -12,6 +12,7 @@
 // Изменение #10: 2025-03-11 14:00 - Версия обновлена до v3.0, убрано "Receiver" из верхней строки
 // Изменение #11: 2025-03-12 12:00 - Сон через 60 минут от старта, "Receiver" возвращён в интерфейс на (6, 0)
 // Изменение #12: 2025-03-12 14:00 - Убран одиночный тон 1500 Гц из playClosedSound, сразу трёхтональный сигнал
+// Изменение #13: 2025-03-12 16:00 - Исправлено расположение "RX: X% TX: X%" в updateDisplay на (80, 0)
 
 #include <SPI.h>
 #include <LoRa.h>
@@ -84,7 +85,6 @@ void showStartupScreen();
 void checkHardware();
 void playContinuousThreeToneBuzzer();
 void playStartupSound();
-// void playClosedSound(); // Закомментировано, так как больше не используется
 void playShutdownSound();
 
 void setup() {
@@ -259,10 +259,10 @@ void updateDisplay(String message) {
   display.setCursor(6, 0);
   display.print(STR_RECEIVER);
 
-  // RX и TX (в верхней строке справа)
+  // RX и TX (в верхней строке справа, на 80,0)
   int senderPercent = (senderRssi == -1) ? -1 : constrain(((senderRssi + 120) * 100) / 90, 0, 100);
   int receiverPercent = (receiverRssi == -1) ? -1 : constrain(((receiverRssi + 120) * 100) / 90, 0, 100);
-  display.setCursor(0, 12);
+  display.setCursor(80, 0);
   display.print(STR_RX);
   if (receiverPercent == -1) display.print("N/A");
   else display.print(String(receiverPercent) + "%");
