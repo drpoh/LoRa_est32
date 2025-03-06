@@ -262,7 +262,7 @@ void updateDisplay(String message) {
   // RX и TX (в верхней строке справа, на 80,0)
   int senderPercent = (senderRssi == -1) ? -1 : constrain(((senderRssi + 120) * 100) / 90, 0, 100);
   int receiverPercent = (receiverRssi == -1) ? -1 : constrain(((receiverRssi + 120) * 100) / 90, 0, 100);
-  display.setCursor(80, 0);
+  display.setCursor(0, 12);
   display.print(STR_RX);
   if (receiverPercent == -1) display.print("N/A");
   else display.print(String(receiverPercent) + "%");
