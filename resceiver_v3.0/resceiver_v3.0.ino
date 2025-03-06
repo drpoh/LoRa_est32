@@ -10,6 +10,8 @@
 // Изменение #8: 2025-03-08 10:00 - Добавлено "Sender off" под "NO SIGNAL" при получении SHUTDOWN
 // Изменение #9: 2025-03-08 14:00 - Добавлены: время последнего сигнала, RSSI в процентах, анимация активности, разные тона
 // Изменение #10: 2025-03-11 14:00 - Версия обновлена до v3.0, убрано "Receiver" из верхней строки
+// Изменение #11: 2025-03-12 12:00 - Сон через 60 минут от старта, "Receiver" возвращён в интерфейс на (6, 0)
+// Изменение #12: 2025-03-12 14:00 - Убран одиночный тон 1500 Гц из playClosedSound, сразу трёхтональный сигнал
 
 #include <SPI.h>
 #include <LoRa.h>
@@ -55,7 +57,7 @@
 #define STR_LAST_SIGNAL "Last signal: "
 #define STR_LAST_CHANGE "Change: "
 #define STR_NEVER "Never"
-#define STR_VERSION "v3.0" // Обновлено до v3.0
+#define STR_VERSION "v3.0"
 #define STR_ERROR "ERROR"
 #define STR_SHUTDOWN "SHUTDOWN"
 
@@ -75,13 +77,14 @@ int buzzerToneIndex = 0;
 bool senderOff = false;
 unsigned long lastStateChangeTime = 0;
 bool stateChanged = false;
+unsigned long startTime = 0; // Время старта для отсчёта сна
 
 void displayUptime(unsigned long millis);
 void showStartupScreen();
 void checkHardware();
 void playContinuousThreeToneBuzzer();
 void playStartupSound();
-void playClosedSound();
+// void playClosedSound(); // Закомментировано, так как больше не используется
 void playShutdownSound();
 
 void setup() {
@@ -98,6 +101,7 @@ void setup() {
 
   Wire.begin(OLED_SDA, OLED_SCL);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    digitalWrite(LED_PIN, HIGH); // Мигаем LED, если дисплей не инициализирован
     while (1);
   }
 
@@ -107,14 +111,15 @@ void setup() {
   SPI.begin(SCK, MISO, MOSI, SS);
   LoRa.setPins(SS, RST, DIO0);
   if (!LoRa.begin(BAND)) {
+    display.clearDisplay();
+    display.setTextColor(WHITE);
+    display.setTextSize(1);
+    display.setCursor(0, 20);
+    display.println("LoRa ERROR");
+    display.display();
+    digitalWrite(LED_PIN, HIGH); // Мигаем LED, если LoRa не инициализирован
     delay(1000);
-    if (!LoRa.begin(BAND)) {
-      display.clearDisplay();
-      display.setCursor(0, 20);
-      display.println(STR_ERROR);
-      display.display();
-      while (1);
-    }
+    while (1);
   }
 
   LoRa.setTxPower(20);
@@ -122,16 +127,10 @@ void setup() {
 
   checkHardware();
 
-  display.clearDisplay();
-  display.setTextColor(WHITE);
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.println(STR_RECEIVER);
-  display.display();
-
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
+  startTime = millis(); // Фиксируем время старта
   lastSignalTime = millis();
   lastStateChangeTime = millis();
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
 }
 
 void loop() {
@@ -175,6 +174,7 @@ void loop() {
 
     if (receivedMessage.startsWith("PONG")) {
       senderRssi = receivedMessage.substring(5).toInt();
+      lastSignalTime = currentMillis;
     } else if (receivedMessage.startsWith("Contacts")) {
       String newState = (receivedMessage == STR_CONTACT_CLOSED) ? STR_CLOSED : STR_OPEN;
       if (newState != lastReceivedState && receivedMessage.startsWith("Contacts")) {
@@ -183,8 +183,7 @@ void loop() {
         stateChanged = true;
 
         if (newState == STR_CLOSED) {
-          buzzerActive = true;
-          playClosedSound();
+          buzzerActive = true; // Сразу включаем трёхтональный сигнал
           senderOff = false;
         } else if (newState == STR_OPEN) {
           digitalWrite(BUZZER_PIN, LOW);
@@ -193,13 +192,12 @@ void loop() {
           senderOff = false;
         }
       }
+      lastSignalTime = currentMillis;
     } else if (receivedMessage == STR_SHUTDOWN) {
       digitalWrite(BUZZER_PIN, LOW);
       senderOff = true;
       lastSignalTime = currentMillis;
     }
-
-    lastSignalTime = currentMillis;
   }
 
   if (buzzerActive) {
@@ -234,11 +232,15 @@ void loop() {
     lastDisplayTime = currentMillis;
   }
 
-  if (currentMillis - lastSignalTime >= SLEEP_TIMEOUT) {
+  // Переход в сон через 60 минут с момента старта
+  if (currentMillis - startTime >= SLEEP_TIMEOUT) {
     digitalWrite(BUZZER_PIN, LOW);
     display.clearDisplay();
+    display.setCursor(0, 20);
+    display.println("Shutting down...");
     display.display();
     playShutdownSound();
+    delay(1000);
     digitalWrite(LED_PIN, LOW);
     esp_deep_sleep_start();
   }
@@ -253,10 +255,14 @@ void updateDisplay(String message) {
   display.setCursor(0, 0);
   display.print((millis() % 1000 < 500) ? "." : " ");
 
+  // "Receiver" рядом с точкой (на 6,0)
+  display.setCursor(6, 0);
+  display.print(STR_RECEIVER);
+
   // RX и TX (в верхней строке справа)
   int senderPercent = (senderRssi == -1) ? -1 : constrain(((senderRssi + 120) * 100) / 90, 0, 100);
   int receiverPercent = (receiverRssi == -1) ? -1 : constrain(((receiverRssi + 120) * 100) / 90, 0, 100);
-  display.setCursor(80, 0);
+  display.setCursor(0, 12);
   display.print(STR_RX);
   if (receiverPercent == -1) display.print("N/A");
   else display.print(String(receiverPercent) + "%");
@@ -270,14 +276,14 @@ void updateDisplay(String message) {
 
   // Состояние контакта (размер 1)
   display.setTextSize(1);
-  display.setCursor(0, 20);
+  display.setCursor(0, 27);
   if (message == STR_CONTACT_CLOSED) {
     display.println(STR_CLOSED);
-    display.setCursor(40, 20);
+    display.setCursor(40, 27);
     display.println("---------");
   } else if (message == STR_CONTACT_OPEN) {
     display.println(STR_OPEN);
-    display.setCursor(40, 20);
+    display.setCursor(40, 27);
     display.println("--- X ---");
   }
 
@@ -298,8 +304,7 @@ void updateDisplay(String message) {
   }
 
   // Uptime (размер 1, внизу)
-  displayUptime(millis);
-
+  displayUptime(millis());
   display.display();
 }
 
@@ -336,20 +341,19 @@ void showStartupScreen() {
 
 void checkHardware() {
   if (!LoRa.begin(BAND)) {
+    display.clearDisplay();
+    display.setCursor(0, 20);
+    display.println("LoRa ERROR");
+    display.display();
+    digitalWrite(LED_PIN, HIGH);
     delay(1000);
-    if (!LoRa.begin(BAND)) {
-      display.clearDisplay();
-      display.setCursor(0, 20);
-      display.println(STR_ERROR);
-      display.display();
-      while (1);
-    }
+    while (1);
   }
 }
 
 void playContinuousThreeToneBuzzer() {
   unsigned long currentMillis = millis();
-  if (currentMillis - lastBuzzerTime >= 80) {
+  if (currentMillis - lastBuzzerTime >= 100) {
     noTone(BUZZER_PIN);
     switch (buzzerToneIndex) {
       case 0:
@@ -373,11 +377,6 @@ void playStartupSound() {
   tone(BUZZER_PIN, 1000, 100);
   delay(100);
   tone(BUZZER_PIN, 1200, 100);
-  delay(100);
-}
-
-void playClosedSound() {
-  tone(BUZZER_PIN, 1500, 100);
   delay(100);
 }
 
